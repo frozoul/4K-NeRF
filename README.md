@@ -3,6 +3,9 @@ Zhongshu Wang, Lingzhi Li, Zhen Shen, Li Shen, Liefeng Bo
 
 Alibaba Group
 
+### 4K-Results
+Due to the limitation of video size displayed on the webpage, the following videos are down-sampled. For the original 4K video comparison, please check under the `4K_video` folder.
+
 https://user-images.githubusercontent.com/15401551/206893466-7bb285f7-67e4-42b5-9fa9-d3e9e784c197.mp4
 
 https://user-images.githubusercontent.com/15401551/206893643-a4c09b2b-fb7b-4af9-aa4c-8acf006f4e07.mp4
