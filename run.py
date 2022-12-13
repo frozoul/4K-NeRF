@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from lib import img_encoder, utils, dvgo, dcvgo, dmpigo, sr_esrnet, sr_unetdisc, dvqgo
+from lib import utils, dvgo, dcvgo, dmpigo, sr_esrnet, sr_unetdisc, dvqgo
 from lib.load_data import load_data
 from lib.masked_adam import MaskedAdam
 
