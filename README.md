@@ -62,22 +62,38 @@ After the pre-training, we use following commands to train the full 4K-NeRF with
 
 * traing 4K resolution with L1 loss:
 
-    `python run_sr.py --config configs/llff/fern_lg_joint_l1.py --render_test --ftdv_path logs/llff/pretrain_fern_l1/fine_last.tar --ftsr_path ./pretrained/RealESRNet_x4plus.pth`
+    ```
+    python run_sr.py --config configs/llff/fern_lg_joint_l1.py \
+           --render_test --ftdv_path logs/llff/pretrain_fern_l1/fine_last.tar \
+           --ftsr_path ./pretrained/RealESRNet_x4plus.pth 
+    ```
 
 * traing 4K resolution with L1+GAN loss:
 
-    `python run_sr.py --config configs/llff/fern_lg_joint_l1+gan.py --render_test --ftdv_path logs/llff/pretrain_fern_l1/fine_last.tar --ftsr_path ./pretrained/RealESRNet_x4plus.pth`
+    ```
+    python run_sr.py --config configs/llff/fern_lg_joint_l1+gan.py \
+            --render_test --ftdv_path logs/llff/pretrain_fern_l1/fine_last.tar \
+            --ftsr_path ./pretrained/RealESRNet_x4plus.pth 
+    ```
 
 * traing 1K resolution with L1+GAN loss:
 
-    `python run_sr.py --config configs/llff/1x_fern_lg_joint_l1+gan.py --render_test --ftdv_path logs/llff/pretrain_fern_l1/fine_last.tar --ftsr_path ./pretrained/RealESRNet_x4plus.pth`
+    ```
+    python run_sr.py --config configs/llff/1x_fern_lg_joint_l1+gan.py \
+            --render_test --ftdv_path logs/llff/pretrain_fern_l1/fine_last.tar \
+            --ftsr_path ./pretrained/RealESRNet_x4plus.pth 
+    ```
 
 
 ## Evaluation
 
 Evaluate at 4K resolution:
 
-`python run_sr.py --config configs/fern_lg_joint_l1+gan.py --render_test --render_only --dv_path logs/llff/<eval_dir>/render_val/lpips_dvgo.tar --sr_path logs/llff/<eval_dir>/render_val/sresrnet_latest.pth`
+   ```
+   python run_sr.py --config configs/fern_lg_joint_l1+gan.py \
+           --render_test --render_only --dv_path logs/llff/<eval_dir>/render_val/lpips_dvgo.tar \
+           --sr_path logs/llff/<eval_dir>/render_val/sresrnet_latest.pth 
+   ```
 
  Replace the `<eval_dir>` to the corresponding experiment name.
 
