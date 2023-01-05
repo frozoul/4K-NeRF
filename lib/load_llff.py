@@ -158,12 +158,16 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True, lo
     imgs = np.stack(imgs, -1)
 
     if load_SR:
-        if load_SR == 4:
-            imgdir_sr = os.path.join(basedir, 'images')
+        if load_SR == 16:
+            imgdir_sr = os.path.join(basedir, 'images_16')
+        elif load_SR == 8:
+            imgdir_sr = os.path.join(basedir, 'images_8')
+        elif load_SR == 4:
+            imgdir_sr = os.path.join(basedir, 'images_4')
         elif load_SR == 2:
             imgdir_sr = os.path.join(basedir, 'images_2')
         elif load_SR == 1:
-            imgdir_sr = os.path.join(basedir, 'images_4')
+            imgdir_sr = os.path.join(basedir, 'images')
         imgfiles_sr = [os.path.join(imgdir_sr, f) for f in sorted(os.listdir(imgdir_sr)) if f.endswith('JPG') or f.endswith('jpg') or f.endswith('png')]
         imgs_sr = [imread(f)[..., :3]/255. for f in imgfiles_sr]
         imgs_sr = np.stack(imgs_sr, -1)
@@ -426,7 +430,7 @@ def load_llff_data(basedir, factor=8, width=None, height=None,
         tt = poses[:,:3,3] # ptstocam(poses[:3,3,:].T, c2w).T
         rads = np.percentile(np.abs(tt), 90, 0) * movie_render_kwargs.get('scale_r', 1)
         c2w_path = c2w
-        N_views = 240
+        N_views = 120
         N_rots = movie_render_kwargs.get('N_rots', 1)
         if path_zflat:
 #             zloc = np.percentile(tt, 10, 0)[2]

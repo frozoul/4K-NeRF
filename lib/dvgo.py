@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision.utils import save_image
 
 from torch_scatter import segment_coo
 from . import grid
@@ -66,6 +67,10 @@ class DirectVoxGO(torch.nn.Module):
         self.k0_type = k0_type
         self.k0_config = k0_config
         self.rgbnet_full_implicit = rgbnet_full_implicit
+        self.dim_rend = 3  # kwargs['dim_rend']
+        self.act_type = 'mlp' # kwargs['act_type']
+        self.mode_type = 'mlp'
+
         if rgbnet_dim <= 0:
             # color voxel grid  (coarse stage)
             self.k0_dim = 3
@@ -87,6 +92,7 @@ class DirectVoxGO(torch.nn.Module):
             self.rgbnet_direct = rgbnet_direct
             self.register_buffer('viewfreq', torch.FloatTensor([(2**i) for i in range(viewbase_pe)]))
             dim0 = (3+3*viewbase_pe*2)
+
             if self.rgbnet_full_implicit:
                 pass
             elif rgbnet_direct:
@@ -95,26 +101,30 @@ class DirectVoxGO(torch.nn.Module):
                 dim0 += self.k0_dim-3
 
             self.dim0 = dim0
-            self.rgbnet = nn.Sequential(
-                nn.Linear(dim0, rgbnet_width), nn.ReLU(inplace=True),
-                *[
-                    nn.Sequential(nn.Linear(rgbnet_width, rgbnet_width), nn.ReLU(inplace=True))
-                    for _ in range(rgbnet_depth-2)
-                ],
-                nn.Linear(rgbnet_width, 3),
-            )
-            nn.init.constant_(self.rgbnet[-1].bias, 0)
+            if self.dim_rend > 3:
+                self.rgbnet = nn.Sequential(
+                    nn.Linear(self.dim0, rgbnet_width),
+                    nn.LeakyReLU(),
+                    nn.Linear(rgbnet_width, self.dim_rend),
+                    nn.LeakyReLU(),
+                )
+                self.rend_layer = nn.Sequential(
+                    nn.Linear(self.dim_rend, 3),
+                )
+                nn.init.constant_(self.rend_layer[-1].bias, 0)
+            else:
+                self.rgbnet = nn.Sequential(
+                    nn.Linear(dim0, rgbnet_width), nn.ReLU(inplace=True),
+                    *[
+                        nn.Sequential(nn.Linear(rgbnet_width, rgbnet_width), nn.ReLU(inplace=True))
+                        for _ in range(rgbnet_depth-2)
+                    ],
+                    nn.Linear(rgbnet_width, 3),
+                )
+                nn.init.constant_(self.rgbnet[-1].bias, 0)
 
             print('dvgo: feature voxel grid', self.k0)
-            self.mode_type = 'mlp'
-            if self.mode_type == 'TRANS':
-                self.trans_nn = transformer.Transformer(dim0, nhead=3, dim_feedforward=48)
-                print('dvgo: transnet', self.trans_nn)
-            elif self.mode_type == 'adain':
-                self.adainet = adain.ADANet(input_channels=dim0, pos_channels=dim0, num_channels=rgbnet_width, output_channels=3)
-                print('dvgo: adainet', self.adainet)
-            else:
-                print('dvgo: mlp', self.rgbnet)
+            print('dvgo: mlp', self.rgbnet)
 
 
         # Using the coarse geometry if provided (used to determine known free space and unknown space)
@@ -144,6 +154,7 @@ class DirectVoxGO(torch.nn.Module):
         self.num_voxels = num_voxels
         self.voxel_size = ((self.xyz_max - self.xyz_min).prod() / num_voxels).pow(1/3)
         self.world_size = ((self.xyz_max - self.xyz_min) / self.voxel_size).long()
+        self.max_world_size = self.world_size.max()
         self.voxel_size_ratio = self.voxel_size / self.voxel_size_base
         print('dvgo: voxel_size      ', self.voxel_size)
         print('dvgo: world_size      ', self.world_size)
@@ -167,6 +178,8 @@ class DirectVoxGO(torch.nn.Module):
             'density_config': self.density_config,
             'k0_config': self.k0_config,
             'mode_type': self.mode_type,
+            'act_type': self.act_type,
+            'dim_rend': self.dim_rend,
             **self.rgbnet_kwargs,
         }
 
@@ -295,18 +308,21 @@ class DirectVoxGO(torch.nn.Module):
         rays_o = rays_o.contiguous()
         rays_d = rays_d.contiguous()
         stepdist = stepsize * self.voxel_size
+        N_samples = int((self.max_world_size-1)/stepsize) + 1
+
         ray_pts, mask_outbbox, ray_id, step_id, N_steps, t_min, t_max = render_utils_cuda.sample_pts_on_rays(
             rays_o, rays_d, self.xyz_min, self.xyz_max, near, far, stepdist)
         mask_inbbox = ~mask_outbbox
 
-        mask_ori = torch.zeros((len(N_steps), N_steps.max())).bool()
-        for idx, item in enumerate(N_steps):
-            mask_ori[idx, :item] = mask_inbbox[ray_id == idx]
+        # mask_ori = torch.zeros((len(N_steps), N_steps.max())).bool()
+        # for idx, item in enumerate(N_steps):
+        #     mask_ori[idx, :item] = mask_inbbox[ray_id == idx]
+        mask_ori = None
 
         ray_pts = ray_pts[mask_inbbox]
         ray_id = ray_id[mask_inbbox]
         step_id = step_id[mask_inbbox]
-        return ray_pts, ray_id, step_id, mask_ori
+        return ray_pts, ray_id, step_id, mask_ori, N_samples
 
     def forward(self, rays_o, rays_d, viewdirs, global_step=None, **render_kwargs):
         '''Volume rendering
@@ -320,7 +336,7 @@ class DirectVoxGO(torch.nn.Module):
         N = len(rays_o)
 
         # sample points on rays
-        ray_pts, ray_id, step_id, mask_inbbox = self.sample_ray(
+        ray_pts, ray_id, step_id, mask_inbbox, N_samples = self.sample_ray(
                 rays_o=rays_o, rays_d=rays_d, **render_kwargs)
         interval = render_kwargs['stepsize'] * self.voxel_size_ratio
 
@@ -360,7 +376,7 @@ class DirectVoxGO(torch.nn.Module):
 
         if self.rgbnet is None:
             # no view-depend effect
-            rgb = torch.sigmoid(k0)
+            rgb_raw = torch.sigmoid(k0)
         else:
             # view-dependent color emission
             if self.rgbnet_direct:
@@ -391,30 +407,39 @@ class DirectVoxGO(torch.nn.Module):
                 rgb_logit = self.rgbnet(rgb_feat)
 
             if self.rgbnet_direct:
-                rgb = torch.sigmoid(rgb_logit)
+                rgb_raw = torch.sigmoid(rgb_logit)
             else:
-                rgb = torch.sigmoid(rgb_logit + k0_diffuse)
+                rgb_raw = torch.sigmoid(rgb_logit + k0_diffuse)
 
         # Ray marching
-        rgb_marched = segment_coo(
-                src=(weights.unsqueeze(-1) * rgb),
+        rgb_feature = segment_coo(
+                src=(weights.unsqueeze(-1) * rgb_raw),
                 index=ray_id,
-                out=torch.zeros([N, 3]),
+                out=torch.zeros([N, self.dim_rend]),
                 reduce='sum')
+        if self.dim_rend > 3:
+            rgb_raw = torch.sigmoid(self.rend_layer(rgb_raw))
+            rgb_marched = self.rend_layer(rgb_feature)
+            # rgb_marched = torch.sigmoid(rgb_marched)
+        else:
+            rgb_marched = rgb_feature
+
         rgb_marched += (alphainv_last.unsqueeze(-1) * render_kwargs['bg'])
+        s = (step_id+0.5) / N_samples
         ret_dict.update({
             'alphainv_last': alphainv_last,
             'weights': weights,
             'rgb_marched': rgb_marched,
+            'rgb_feature': rgb_feature,
             'raw_alpha': alpha,
-            'raw_rgb': rgb,
+            'raw_rgb': rgb_raw,
             'ray_id': ray_id,
         })
 
         if render_kwargs.get('render_depth', False):
             with torch.no_grad():
                 depth = segment_coo(
-                        src=(weights * step_id),
+                        src=(weights * s),  # step_id
                         index=ray_id,
                         out=torch.zeros([N]),
                         reduce='sum')
@@ -656,23 +681,48 @@ def get_training_rays_in_maskcache_sampling(rgb_tr_ori, train_poses, HW, Ks, ndc
 
 
 @torch.no_grad()
-def get_training_rays_in_maskcache_sampling_syn(rgb_tr_ori, train_poses, HW, Ks, ndc, inverse_y, flip_x, flip_y, model, render_kwargs):
+def get_training_rays_in_maskcache_sampling_sr(rgb_tr_ori, train_poses, HW, Ks, ndc, inverse_y, flip_x, flip_y, model, render_kwargs, cfgs):
     print('get_training_rays_in_maskcache_sampling: start')
     assert len(rgb_tr_ori) == len(train_poses) and len(rgb_tr_ori) == len(Ks) and len(rgb_tr_ori) == len(HW)
     CHUNK = 64
     DEVICE = rgb_tr_ori[0].device
     eps_time = time.time()
     N = sum(im.shape[0] * im.shape[1] for im in rgb_tr_ori)
+    H, W = HW[0]
     # rgb_tr = torch.zeros([N,3], device=DEVICE)
-    rgb_tr  = rgb_tr_ori
-    rays_o_tr = torch.zeros([len(rgb_tr), H, W, 3], device=rgb_tr.device)
-    rays_d_tr = torch.zeros([len(rgb_tr), H, W, 3], device=rgb_tr.device)
-    viewdirs_tr = torch.zeros([len(rgb_tr), H, W, 3], device=rgb_tr.device)
-    # rays_o_tr = torch.zeros_like(rgb_tr)
-    # rays_d_tr = torch.zeros_like(rgb_tr)
-    # viewdirs_tr = torch.zeros_like(rgb_tr)
+    rgb_tr  = torch.zeros([len(rgb_tr_ori), H, W, 3], device=rgb_tr_ori.device)
+    rays_o_tr = torch.zeros([len(rgb_tr_ori), H, W, 3], device=rgb_tr.device)
+    rays_d_tr = torch.zeros([len(rgb_tr_ori), H, W, 3], device=rgb_tr.device)
+    viewdirs_tr = torch.zeros([len(rgb_tr_ori), H, W, 3], device=rgb_tr.device)
+
+    def mask_patch_generator(arr_all, index_all):
+        # arr_all_sr = arr_all
+        list_bp = list(range(len(arr_all)))
+        num_total = len(list_bp)
+        idx_im, top = torch.LongTensor(np.random.permutation(list_bp)), 0
+
+        while True:
+            if top >= num_total:
+                idx_im, top = torch.LongTensor(np.random.permutation(list_bp)), 0
+            bp_chioce = idx_im[top]
+            image_chioce = index_all[bp_chioce]
+            patch_chioce = arr_all[bp_chioce]
+            patch_4x_chioce = patch_chioce
+            # patch_chioce = arr_all[patch_ind]
+            # patch_4x_chioce = arr_all_sr[patch_ind]
+            top += 1
+            pr, pc = patch_chioce.shape[0], patch_chioce.shape[1]
+            patch_chioce = patch_chioce.reshape(-1, 2)
+            patch_4x_chioce = patch_4x_chioce.reshape(-1, 2)
+            patch_chioce = np.moveaxis(patch_chioce, -1, 0)
+            patch_4x_chioce = np.moveaxis(patch_4x_chioce, -1, 0)
+            yield image_chioce, list(patch_chioce[0]), list(patch_chioce[1]), list(patch_4x_chioce[0]), list(patch_4x_chioce[1]), [pr, pc]
+
     imsz = []
     top = 0
+    idx_b = 0
+    patch_all = []
+    index_all =[]
     for c2w, img, (H, W), K in zip(train_poses, rgb_tr_ori, HW, Ks):
         assert img.shape[:2] == (H, W)
         rays_o, rays_d, viewdirs = get_rays_of_a_view(
@@ -683,21 +733,29 @@ def get_training_rays_in_maskcache_sampling_syn(rgb_tr_ori, train_poses, HW, Ks,
             mask[i:i+CHUNK] = model.hit_coarse_geo(
                     rays_o=rays_o[i:i+CHUNK], rays_d=rays_d[i:i+CHUNK], **render_kwargs).to(DEVICE)
         n = mask.sum()
-        rgb_tr[top:top+n].copy_(img[mask])
-        rays_o_tr[top:top+n].copy_(rays_o[mask].to(DEVICE))
-        rays_d_tr[top:top+n].copy_(rays_d[mask].to(DEVICE))
-        viewdirs_tr[top:top+n].copy_(viewdirs[mask].to(DEVICE))
+        arr_all = patch_gen(imsz=[H, W], num_im=100, BS=4096, sz_patch=CHUNK)
+        masks_arr = [mask[arr[:, :, 0], arr[:, :, 1]] for arr in arr_all]
+        for idx, patch_mask in enumerate(masks_arr):
+            if patch_mask.sum() > 2048:
+                index_all.append(idx_b)
+                patch_all.append(arr_all[idx])
+
+        rgb_tr[idx_b].copy_(img)
+        rays_o_tr[idx_b].copy_(rays_o.to(DEVICE))
+        rays_d_tr[idx_b].copy_(rays_d.to(DEVICE))
+        viewdirs_tr[idx_b].copy_(viewdirs.to(DEVICE))
         imsz.append(n)
         top += n
+        idx_b += 1
+        print(f'patches of image {idx_b} has generated.')
 
+    patch_all = np.stack(patch_all, axis=0)
+    index_all = np.stack(index_all, axis=0)
     print('get_training_rays_in_maskcache_sampling: ratio', top / N)
-    rgb_tr = rgb_tr[:top]
-    rays_o_tr = rays_o_tr[:top]
-    rays_d_tr = rays_d_tr[:top]
-    viewdirs_tr = viewdirs_tr[:top]
+    patch_generator = mask_patch_generator(patch_all, index_all)
     eps_time = time.time() - eps_time
     print('get_training_rays_in_maskcache_sampling: finish (eps time:', eps_time, 'sec)')
-    return rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz
+    return rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz, patch_generator
 
 
 def batch_indices_generator(N, BS):
@@ -761,8 +819,7 @@ def simg_patch_indices_generator(imsz, BS):
         yield list(np.moveaxis(patch_chioce, -1, 0))
 
 
-def mimg_patch_indices_generator(imsz, num_im, BS, sz_patch, sr_ratio):
-    def patch_gen(imsz, num_im, BS, sz_patch):
+def patch_gen(imsz, num_im, BS, sz_patch):
         BS = BS // sz_patch
         H, W = imsz[0], imsz[1]
         num_x, num_y = H // BS, W // BS
@@ -789,6 +846,8 @@ def mimg_patch_indices_generator(imsz, num_im, BS, sz_patch, sr_ratio):
         arr_all.extend(arr_yp_last)
 
         return arr_all
+
+def mimg_patch_indices_generator(imsz, num_im, BS, sz_patch, sr_ratio):
     
     arr_all = patch_gen(imsz, num_im, BS, sz_patch)
     arr_all_sr = patch_gen(imsz*sr_ratio, num_im, BS*sr_ratio, sz_patch)

@@ -1,9 +1,10 @@
-import os, sys, copy, glob, json, time, random, argparse
+import os, sys, copy, time, random, argparse
 from tqdm import tqdm, trange
-# os.environ["CUDA_VISIBLE_DEVICES"]="7"
+os.environ["CUDA_VISIBLE_DEVICES"]="1"
 import mmcv
 import imageio
 import numpy as np
+from cv2 import resize
 
 import torch
 import torch.nn.functional as F
@@ -15,8 +16,6 @@ from lib.masked_adam import MaskedAdam
 from torch_efficient_distloss import flatten_eff_distloss
 from torch.utils.tensorboard import SummaryWriter
 from basicsr.losses import GANLoss, PerceptualLoss
-# from lib.sr_loss import NNFMLoss
-# os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
 
 def config_parser():
     '''Define command line arguments
@@ -40,8 +39,12 @@ def config_parser():
                         help='specific weights file to reload for super resolution network in test stage')
     parser.add_argument("--ftsr_path", type=str, default='',
                         help='specific weights file to reload for super resolution network for finetine')
+    parser.add_argument("--ftdvcoa_path", type=str, default='',
+                        help='specific weights file to reload for super resolution network for finetine')
     parser.add_argument("--ftdv_path", type=str, default='',
                         help='specific weights file to reload for super resolution network for finetine')
+    parser.add_argument("--test_tile", type=int, default=510,
+                        help='tile images in test stage to reduce GPU memory cost')
 
     # testing options
     parser.add_argument("--render_only", action='store_true',
@@ -294,20 +297,12 @@ def create_new_model(cfg, cfg_model, cfg_train, xyz_min, xyz_max, stage, coarse_
         num_voxels = int(num_voxels / (2**len(cfg_train.pg_scale)))
 
     if cfg.data.ndc:
-        if cfg_model.mode_type == 'adain_vq':
-            print(f'scene_rep_reconstruction ({stage}): \033[96muse vector query images\033[0m')
-            model = dvqgo.DirectQVGO(
-                xyz_min=xyz_min, xyz_max=xyz_max,
-                num_voxels=num_voxels,
-                # viewbase_pe=model_kwargs.viewbase_pe,
-                **model_kwargs)
-        else:
-            print(f'scene_rep_reconstruction ({stage}): \033[96muse multiplane images\033[0m')
-            model = dmpigo.DirectMPIGO(
-                xyz_min=xyz_min, xyz_max=xyz_max,
-                num_voxels=num_voxels,
-                # viewbase_pe=model_kwargs.viewbase_pe,
-                **model_kwargs)
+        print(f'scene_rep_reconstruction ({stage}): \033[96muse multiplane images\033[0m')
+        model = dmpigo.DirectMPIGO(
+            xyz_min=xyz_min, xyz_max=xyz_max,
+            num_voxels=num_voxels,
+            # viewbase_pe=model_kwargs.viewbase_pe,
+            **model_kwargs)
     elif cfg.data.unbounded_inward:
         print(f'scene_rep_reconstruction ({stage}): \033[96muse contraced voxel grid (covering unbounded)\033[0m')
         model = dcvgo.DirectContractedVoxGO(
@@ -327,10 +322,7 @@ def create_new_model(cfg, cfg_model, cfg_train, xyz_min, xyz_max, stage, coarse_
 
 def load_existed_model(args, cfg, cfg_train, reload_ckpt_path):
     if cfg.data.ndc:
-        if cfg.fine_model_and_render.mode_type == 'adain_vq':
-            model_class = dvqgo.DirectQVGO
-        else:
-            model_class = dmpigo.DirectMPIGO
+        model_class = dmpigo.DirectMPIGO
     elif cfg.data.unbounded_inward:
         model_class = dcvgo.DirectContractedVoxGO
     else:
@@ -643,7 +635,7 @@ def scene_rep_reconstruction_sr_patch(args, cfg, cfg_model, cfg_train, xyz_min, 
             'HW', 'Ks', 'near', 'far', 'i_train', 'i_val', 'i_test', 'poses', 'render_poses', 'images', 'srgt', 'w2c'
         ]
     ]
-    sr_ratio = cfg.data.load_sr
+    sr_ratio = int(cfg.data.factor / cfg.data.load_sr)
 
     # find whether there is existing checkpoint path
     last_ckpt_path = os.path.join(cfg.basedir, cfg.expname, f'{stage}_last.tar')
@@ -668,10 +660,7 @@ def scene_rep_reconstruction_sr_patch(args, cfg, cfg_model, cfg_train, xyz_min, 
         model, optimizer, start = load_existed_model(args, cfg, cfg_train, reload_ckpt_path)
     model = model.to(device)
     net_sr = sr_esrnet.SFTNet(n_in_colors=cfg_model.dim_rend, scale=sr_ratio, num_feat=64, num_block=5, num_grow_ch=32, num_cond=cfg_model.num_cond, dswise=False).to(device)
-    # if args.ftsr_path == '../pretrained/esrnet_5B64F_100000.pth':
     net_sr.load_network(load_path=args.ftsr_path, device=device, strict=False)
-    # elif args.ftsr_path:
-    #     net_sr.load_network(load_path=args.ftsr_path, device=device, strict=True)
 
     param_sr = []
     param_sr.append({'params': net_sr.parameters(), 'lr': cfg_train.lrate_srnet, 'kname': 'srnet', 'skip_zero_grad': (False)})
@@ -740,6 +729,13 @@ def scene_rep_reconstruction_sr_patch(args, cfg, cfg_model, cfg_train, xyz_min, 
                     ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y,
                     flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y,
                     model=model, render_kwargs=render_kwargs)
+        elif cfg_train.ray_sampler == 'patch_inmask':
+            rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz, index_generator_mask = dvgo.get_training_rays_in_maskcache_sampling_sr(rgb_tr_ori=rgb_tr_ori,
+                    train_poses=poses[i_train],
+                    HW=HW[i_train], Ks=Ks[i_train],
+                    ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y,
+                    flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y,
+                    model=model, render_kwargs=render_kwargs, cfgs=cfg)
         elif cfg_train.ray_sampler == 'flatten':
             rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz = dvgo.get_training_rays(
                 rgb_tr=rgb_tr_ori,
@@ -756,6 +752,8 @@ def scene_rep_reconstruction_sr_patch(args, cfg, cfg_model, cfg_train, xyz_min, 
             index_generator = dvgo.simg_patch_indices_generator(HW[0], cfg_train.N_rand)
         elif cfg_train.ray_sampler == 'patch_mimg':
             index_generator = dvgo.mimg_patch_indices_generator(HW[0], len(i_train), cfg_train.N_rand, cfg_train.N_patch, sr_ratio)
+        elif cfg_train.ray_sampler == 'patch_inmask':
+            index_generator = index_generator_mask
         else:
             index_generator = dvgo.batch_images_generator(len(rgb_tr), rgb_tr.shape[1]*rgb_tr.shape[2], cfg_train.N_rand)
         batch_index_sampler = lambda: next(index_generator)
@@ -763,9 +761,13 @@ def scene_rep_reconstruction_sr_patch(args, cfg, cfg_model, cfg_train, xyz_min, 
 
     rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz, batch_index_sampler = gather_training_rays()
 
-    rgb_srgt_train = srgt[i_train].to('cpu' if cfg.data.load2gpu_on_the_fly else device).movedim(1, -1)
-    rgb_srgt_val = srgt[i_val].squeeze().movedim(0, -1).numpy()
-    # w2c_train = w2c[i_train].to('cpu' if cfg.data.load2gpu_on_the_fly else device).flatten(1)
+    rgb_srgt_train = srgt[i_train].to('cpu' if cfg.data.load2gpu_on_the_fly else device)
+    rgb_srgt_val = srgt[i_val].squeeze()
+    if cfg.data.dataset_type == 'llff':
+        rgb_srgt_train = rgb_srgt_train.movedim(1, -1)
+        rgb_srgt_val = rgb_srgt_val.movedim(0, -1)
+        rgb_srgt_val = rgb_srgt_val.unsqueeze(0)
+    rgb_srgt_val = rgb_srgt_val.numpy()
 
     # view-count-based learning rate
     if cfg_train.pervoxel_lr:
@@ -831,6 +833,14 @@ def scene_rep_reconstruction_sr_patch(args, cfg, cfg_model, cfg_train, xyz_min, 
             rays_d = rays_d_tr[sel_b, sel_r, sel_c]
             viewdirs = viewdirs_tr[sel_b, sel_r, sel_c]
             pr, pc = ps[0], ps[1]
+        elif cfg_train.ray_sampler == 'patch_inmask':
+            sel_b, sel_r, sel_c, sel_r_4x, sel_c_4x, ps = batch_index_sampler()
+            target = rgb_tr[sel_b, sel_r, sel_c, :]
+            target_4x = rgb_srgt_train[sel_b, sel_r_4x, sel_c_4x, :]
+            rays_o = rays_o_tr[sel_b, sel_r, sel_c]
+            rays_d = rays_d_tr[sel_b, sel_r, sel_c]
+            viewdirs = viewdirs_tr[sel_b, sel_r, sel_c]
+            pr, pc = ps[0], ps[1]
         elif cfg_train.ray_sampler == 'random':
             sel_b = torch.randint(rgb_tr.shape[0], [cfg_train.N_rand])
             sel_r = torch.randint(rgb_tr.shape[1], [cfg_train.N_rand])
@@ -856,7 +866,6 @@ def scene_rep_reconstruction_sr_patch(args, cfg, cfg_model, cfg_train, xyz_min, 
             dis_cond = torch.cat([viewdirs, dis_cond.sin(), dis_cond.cos()], -1)
             dis_cond = dis_cond.reshape(1, pr, pc, -1).movedim(-1, 1).detach()
 
-        # model.eval()
         render_result = model(
             rays_o, rays_d, viewdirs,
             global_step=global_step, is_train=True,
@@ -886,7 +895,7 @@ def scene_rep_reconstruction_sr_patch(args, cfg, cfg_model, cfg_train, xyz_min, 
         if cfg_model.num_cond == 1:
             # use depth as SFT conditional input
             input_cond = render_result['depth']
-            input_cond = input_cond.reshape(1, pr, pc, 1).movedim(-1, 1).detach()
+            input_cond = input_cond.reshape(1, pr, pc, 1).movedim(-1, 1)
         elif cfg_model.num_cond == 63:
             # use viewdir embeding as SFT conditional input
             viewfreq = torch.FloatTensor([(2**i) for i in range(10)]).to(device)
@@ -1111,21 +1120,23 @@ def scene_rep_reconstruction_sr_patch(args, cfg, cfg_model, cfg_train, xyz_min, 
                         input_cond = torch.cat((input_cond1, input_cond2), dim=1)
 
                     net_sr.eval()
-                    # if cfg_model.dim_rend == 3:
-                    #     rgb_srtest = net_sr(rgbtest, input_cond)
-                    # else:
-                    #     rgb_srtest = net_sr(rgb, input_cond, rgbtest)
-                    rgb_srtest = net_sr(rgbtest, input_cond)
+                    if args.test_tile:
+                        rgb_srtest = net_sr.tile_process(rgbtest, input_cond, tile_size=args.test_tile)
+                    else:
+                        rgb_srtest = net_sr(rgbtest, input_cond).detach()
 
                     imageio.imwrite(os.path.join(testsavedir, f'test_{global_step}.png'), utils.to8b(rgbs[idx]))
                     net_sr.train()
 
                     rgb_srsave = rgb_srtest.squeeze().movedim(0, -1).detach().clamp(0, 1).cpu().numpy()
-                    sr_mse = np.mean(np.square(rgb_srsave - rgb_srgt_val))
+                    sr_mse = np.mean(np.square(rgb_srsave - rgb_srgt_val[idx]))
                     sr_psnr = -10. * np.log10(sr_mse)
-                    sr_ssim = utils.rgb_ssim(rgb_srsave, rgb_srgt_val, max_val=1)
-                    sr_lpips = utils.rgb_lpips(rgb_srsave, rgb_srgt_val, net_name='vgg', device=device)
-                    
+                    sr_ssim = utils.rgb_ssim(rgb_srsave, rgb_srgt_val[idx], max_val=1)
+                    if cfg.data.load_sr == 1:
+                        sr_lpips = utils.rgb_lpips(resize(rgb_srsave, dsize=None, fx=1/4, fy=1/4), resize(rgb_srgt_val[idx], dsize=None, fx=1/4, fy=1/4), net_name='vgg', device=device)
+                    else:
+                        sr_lpips = utils.rgb_lpips(rgb_srsave, rgb_srgt_val[idx], net_name='vgg', device=device)
+
                     print('Testing psnr', sr_psnr, '(sr)')
                     print('Testing ssim', sr_ssim, '(sr)')
                     print('Testing lpips', sr_lpips, '(sr)')
@@ -1184,15 +1195,15 @@ def train(args, cfg, data_dict):
     eps_coarse = time.time()
     xyz_min_coarse, xyz_max_coarse = compute_bbox_by_cam_frustrm(args=args, cfg=cfg, **data_dict)
     if cfg.coarse_train.N_iters > 0:
-        scene_rep_reconstruction(
-                args=args, cfg=cfg,
-                cfg_model=cfg.coarse_model_and_render, cfg_train=cfg.coarse_train,
-                xyz_min=xyz_min_coarse, xyz_max=xyz_max_coarse,
-                data_dict=data_dict, stage='coarse')
-        eps_coarse = time.time() - eps_coarse
+        # scene_rep_reconstruction(
+        #         args=args, cfg=cfg,
+        #         cfg_model=cfg.coarse_model_and_render, cfg_train=cfg.coarse_train,
+        #         xyz_min=xyz_min_coarse, xyz_max=xyz_max_coarse,
+        #         data_dict=data_dict, stage='coarse')
+        # eps_coarse = time.time() - eps_coarse
         eps_time_str = f'{eps_coarse//3600:02.0f}:{eps_coarse//60%60:02.0f}:{eps_coarse%60:02.0f}'
         print('train: coarse geometry searching in', eps_time_str)
-        coarse_ckpt_path = os.path.join(cfg.basedir, cfg.expname, f'coarse_last.tar')
+        coarse_ckpt_path = args.ftdvcoa_path
     else:
         print('train: skip coarse geometry searching')
         coarse_ckpt_path = None
@@ -1239,6 +1250,7 @@ if __name__=='__main__':
 
     # load images / poses / camera settings / data split
     data_dict = load_everything(args=args, cfg=cfg)
+    sr_ratio = int(cfg.data.factor / cfg.data.load_sr)
 
     # export scene bbox and camera poses in 3d for debugging and visualization
     if args.export_bbox_and_cams_only:
@@ -1286,10 +1298,7 @@ if __name__=='__main__':
 
         ckpt_name = ckpt_path.split('/')[-1][:-4]
         if cfg.data.ndc:
-            if cfg.fine_model_and_render.mode_type == 'adain_vq':
-                model_class = dvqgo.DirectQVGO
-            else:
-                model_class = dmpigo.DirectMPIGO
+            model_class = dmpigo.DirectMPIGO
         elif cfg.data.unbounded_inward:
             model_class = dcvgo.DirectContractedVoxGO
         else:
@@ -1341,7 +1350,7 @@ if __name__=='__main__':
                 eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
                 **render_viewpoints_kwargs)
 
-        net_sr = sr_esrnet.SFTNet(n_in_colors=cfg.fine_model_and_render.dim_rend, scale=cfg.data.load_sr, num_feat=64, num_block=5, num_grow_ch=32, num_cond=cfg.fine_model_and_render.num_cond, dswise=False).to(device)
+        net_sr = sr_esrnet.SFTNet(n_in_colors=cfg.fine_model_and_render.dim_rend, scale=sr_ratio, num_feat=64, num_block=5, num_grow_ch=32, num_cond=cfg.fine_model_and_render.num_cond, dswise=False).to(device)
         if args.sr_path:
             net_sr.load_network(load_path=args.sr_path, device=device)
         else:
@@ -1372,12 +1381,10 @@ if __name__=='__main__':
                 input_cond2 = input_cond2.reshape(1, HW[0], HW[1], -1).movedim(-1, 1).detach()
                 input_cond = torch.cat((input_cond1, input_cond2), dim=1)
 
-            # rgb_srtest = net_sr.tile_process(rgbtest, 300)
-            # if cfg.fine_model_and_render.dim_rend == 3:
-            #     rgb_srtest = net_sr(rgbtest, input_cond).detach().to('cpu')
-            # else:
-            #     rgb_srtest = net_sr(rgb, input_cond, rgbtest).detach().to('cpu')
-            rgb_srtest = net_sr(rgbtest, input_cond).detach().to('cpu')
+            if args.test_tile:
+                rgb_srtest = net_sr.tile_process(rgbtest, input_cond, tile_size=args.test_tile)
+            else:
+                rgb_srtest = net_sr(rgbtest, input_cond).detach().to('cpu')
 
             rgb_srsave = rgb_srtest.squeeze().movedim(0, -1).detach().clamp(0, 1).numpy()
             rgbsr.append(rgb_srsave)
@@ -1402,7 +1409,7 @@ if __name__=='__main__':
                 render_video_rot90=args.render_video_rot90,
                 savedir=testsavedir, dump_images=args.dump_images,
                 **render_viewpoints_kwargs)
-        net_sr = sr_esrnet.SFTNet(n_in_colors=cfg.fine_model_and_render.dim_rend, scale=cfg.data.load_sr, num_feat=64, num_block=5, num_grow_ch=32, num_cond=cfg.fine_model_and_render.num_cond, dswise=False).to(device)
+        net_sr = sr_esrnet.SFTNet(n_in_colors=cfg.fine_model_and_render.dim_rend, scale=sr_ratio, num_feat=64, num_block=5, num_grow_ch=32, num_cond=cfg.fine_model_and_render.num_cond, dswise=False).to(device)
         if args.sr_path:
             net_sr.load_network(load_path=args.sr_path, device=device)
         else:
@@ -1433,13 +1440,13 @@ if __name__=='__main__':
                 input_cond2 = input_cond2.reshape(1, HW[0], HW[1], -1).movedim(-1, 1).detach()
                 input_cond = torch.cat((input_cond1, input_cond2), dim=1)
 
+            torch.cuda.synchronize()
             time_srstart = time.time()
-            # rgb_srtest = net_sr.tile_process(rgbtest, 300)
-            # if cfg.fine_model_and_render.dim_rend == 3:
-            #     rgb_srtest = net_sr(rgbtest, input_cond).detach()
-            # else:
-            #     rgb_srtest = net_sr(rgb, input_cond, rgbtest).detach()
-            rgb_srtest = net_sr(rgbtest, input_cond).detach()
+            if args.test_tile:
+                rgb_srtest = net_sr.tile_process(rgbtest, input_cond, tile_size=args.test_tile)
+            else:
+                rgb_srtest = net_sr(rgbtest, input_cond).detach()
+            torch.cuda.synchronize()
             print(f'sr time is: {time.time() - time_srstart}')
             rgb_srtest = rgb_srtest.to('cpu')
             

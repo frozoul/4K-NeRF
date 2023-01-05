@@ -55,8 +55,6 @@ def load_data(args):
         print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
         i_train, i_val, i_test = i_split
 
-        srgt = [images, 0]
-
         near, far = 2., 6.
 
         if images.shape[-1] == 4:
@@ -64,6 +62,8 @@ def load_data(args):
                 images = images[...,:3]*images[...,-1:] + (1.-images[...,-1:])
             else:
                 images = images[...,:3]*images[...,-1:]
+
+        srgt = [images, 0]
 
     elif args.dataset_type == 'blendedmvs':
         images, poses, render_poses, hwf, K, i_split = load_blendedmvs_data(args.datadir)

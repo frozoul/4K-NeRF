@@ -50,6 +50,8 @@ def load_blender_data(basedir, half_res=False, testskip=1):
         poses = []
         if s=='train' or testskip==0:
             skip = 1
+        elif s == 'val':
+            skip = 50
         else:
             skip = testskip
 

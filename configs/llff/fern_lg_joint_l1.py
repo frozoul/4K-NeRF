@@ -5,8 +5,9 @@ expname = 'joint_fern_l1'
 data = dict(
     datadir='./datasets/nerf_llff_data/fern',
     dataset_type='llff',
-    load_sr=4,
+    load_sr=1,
     llffhold=8,
+    factor=4
 )
 
 fine_train = dict(

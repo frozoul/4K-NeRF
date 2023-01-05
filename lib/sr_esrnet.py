@@ -398,13 +398,7 @@ class RRDBNet_bps(nn.Module):
 
 
 class SFTNet(nn.Module):
-    """Networks consisting of Residual in Residual Dense Block, which is used
-    in ESRGAN.
-    ESRGAN: Enhanced Super-Resolution Generative Adversarial Networks.
-    We extend ESRGAN for scale x2 and scale x1.
-    Note: This is one option for scale 1, scale 2 in RRDBNet.
-    We first employ the pixel-unshuffle (an inverse operation of pixelshuffle to reduce the spatial size
-    and enlarge the channel size before feeding inputs into the main ESRGAN architecture.
+    """
     Args:
         num_in_ch (int): Channel number of inputs.
         num_out_ch (int): Channel number of outputs.
@@ -477,6 +471,7 @@ class SFTNet(nn.Module):
         output_height = height * self.scale
         output_width = width * self.scale
         output_shape = (batch, channel, output_height, output_width)
+        cond = cond.unsqueeze(0)
 
         # start with black image
         output = img.new_zeros(output_shape).to('cpu')
@@ -509,8 +504,8 @@ class SFTNet(nn.Module):
                 cond_tile = cond[:, :, input_start_y_pad:input_end_y_pad, input_start_x_pad:input_end_x_pad]
                 # upscale tile
                 # try:
-                #     with torch.no_grad():
-                output_tile = self(input_tile, cond_tile)
+                with torch.no_grad():
+                    output_tile = self(input_tile, cond_tile)
                 # except Exception as error:
                 #     print('Error', error)
                 print(f'\tTile {tile_idx}/{tiles_x * tiles_y}')

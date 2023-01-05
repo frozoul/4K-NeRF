@@ -3,9 +3,10 @@ _base_ = './llff_default_lg.py'
 expname = '1x_joint_fern_l1+gan'
 
 data = dict(
-    datadir='../datasets_nerf/nerf_llff_data/fern',
+    datadir='./datasets/nerf_llff_data/fern',
     dataset_type='llff',
-    load_sr=1,
+    factor=4,
+    load_sr=4,
     llffhold=8,
 )
 
