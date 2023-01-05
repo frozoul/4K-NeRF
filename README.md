@@ -53,7 +53,7 @@ Put them in the `./datasets` sub-folder.
 
 
 ## Training
-Our method can train from scratch for any given scene, but we recommend  pre-train the VC-Encoder for faster convergence:
+Our method can train from scratch for any given scene, but we recommend pre-train the VC-Encoder for faster convergence:
 
 ` python run.py --config configs/llff/fern_lg_pretrain.py --render_test`
 
@@ -65,7 +65,7 @@ After the pre-training, we use following commands to train the full 4K-NeRF with
     ```
     python run_sr.py --config configs/llff/fern_lg_joint_l1.py \
            --render_test --ftdv_path logs/llff/pretrain_fern_l1/fine_last.tar \
-           --ftsr_path ./pretrained/RealESRNet_x4plus.pth 
+           --ftsr_path ./pretrained/RealESRNet_x4plus.pth --test_tile 510
     ```
 
 * traing 4K resolution with L1+GAN loss:
@@ -73,10 +73,10 @@ After the pre-training, we use following commands to train the full 4K-NeRF with
     ```
     python run_sr.py --config configs/llff/fern_lg_joint_l1+gan.py \
             --render_test --ftdv_path logs/llff/pretrain_fern_l1/fine_last.tar \
-            --ftsr_path ./pretrained/RealESRNet_x4plus.pth 
+            --ftsr_path ./pretrained/RealESRNet_x4plus.pth --test_tile 510
     ```
 
-* traing 1K resolution with L1+GAN loss:
+* traing 1K resolution (LLFF) with L1+GAN loss:
 
     ```
     python run_sr.py --config configs/llff/1x_fern_lg_joint_l1+gan.py \
@@ -84,6 +84,14 @@ After the pre-training, we use following commands to train the full 4K-NeRF with
             --ftsr_path ./pretrained/RealESRNet_x4plus.pth 
     ```
 
+* traing 1K resolution (nerf_synthetic) with L1+GAN loss:
+
+    ```
+    python run_sr.py --config configs/syn/1x_chair_joint_l1+gan.py \
+             --render_test --ftdvcoa_path ./logs/syn/pretrain_chair/coarse_last.tar \
+             --ftdv_path ./logs/syn/pretrain_chair/fine_last.tar \
+             --ftsr_path ./pretrained/RealESRNet_x4plus.pth 
+    ```
 
 ## Evaluation
 
@@ -92,7 +100,7 @@ Evaluate at 4K resolution:
    ```
    python run_sr.py --config configs/fern_lg_joint_l1+gan.py \
            --render_test --render_only --dv_path logs/llff/<eval_dir>/render_val/lpips_dvgo.tar \
-           --sr_path logs/llff/<eval_dir>/render_val/sresrnet_latest.pth 
+           --sr_path logs/llff/<eval_dir>/render_val/sresrnet_latest.pth --test_tile 510
    ```
 
  Replace the `<eval_dir>` to the corresponding experiment name.
