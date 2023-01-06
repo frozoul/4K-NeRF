@@ -55,7 +55,9 @@ Put them in the `./datasets` sub-folder.
 ## Training
 Our method can train from scratch for any given scene, but we recommend pre-train the VC-Encoder for faster convergence:
 
-` python run.py --config configs/llff/fern_lg_pretrain.py --render_test`
+LLFF: ` python run.py --config configs/llff/fern_lg_pretrain.py --render_test `
+
+NeRF_Synthetic: ` python run.py --config configs/syn/syn_default.py --render_test `
 
 
 After the pre-training, we use following commands to train the full 4K-NeRF with different configs:
@@ -84,7 +86,7 @@ After the pre-training, we use following commands to train the full 4K-NeRF with
             --ftsr_path ./pretrained/RealESRNet_x4plus.pth 
     ```
 
-* traing 1K resolution (nerf_synthetic) with L1+GAN loss:
+* traing 1K resolution (NeRF_Synthetic) with L1+GAN loss:
 
     ```
     python run_sr.py --config configs/syn/1x_chair_joint_l1+gan.py \
