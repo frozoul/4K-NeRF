@@ -3,6 +3,8 @@ Zhongshu Wang, Lingzhi Li, Zhen Shen, Li Shen, Liefeng Bo
 
 Alibaba Group
 
+[[Project Webpage](https://frozoul.github.io/4knerf/)] [[Bibtex](bib.txt)]
+
 ### 4K-Results
 Due to the limitation of video size displayed on the webpage, the following videos are down-sampled. For the original 4K video comparison, please check under the `4K_results` folder.
 
