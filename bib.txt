@@ -1,0 +1,6 @@
+@article{wang20224k,
+  title={4K-NeRF: High Fidelity Neural Radiance Fields at Ultra High Resolutions},
+  author={Wang, Zhongshu and Li, Lingzhi and Shen, Zhen and Shen, Li and Bo, Liefeng},
+  journal={arXiv preprint arXiv:2212.04701},
+  year={2022}
+}
